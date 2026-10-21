@@ -23,8 +23,8 @@ DEFAULTS = {
         max_z_angle_deg=15.0, num_rays=1000, dt=0.1),
     'beam_propagation': dict(
         half_width=12.7, z_length=25.4, n_xy=64, n_z=32, wavelength_um=1.0,
-        step_size=100.0, z_planes=(1, 2, 3), smoothing_sigma=5.0, radius=3.0,
-        divergence_angle_degrees=15.0),
+        step_size=10.0, momentum=0.9, z_planes=(1, 2, 3), smoothing_sigma=5.0,
+        radius=3.0, divergence_angle_degrees=15.0),
     }
 
 def build_run(params):
@@ -71,6 +71,7 @@ def build_run(params):
                 x0, y0, wavelength, params['divergence_angle_degrees'])
             optic.set_2d_input_field(input_field, wavelength)
             optic.set_2d_desired_output_field(desired_output_field)
+        gradient_update_kwargs['momentum'] = params['momentum']
     return optic, set_training_pair, gradient_update_kwargs
 
 def load_output(output_dir):
@@ -125,6 +126,9 @@ def main():
                                          min_value=0.0001)
             params['smoothing_sigma'] = number(
                 "Smoothing sigma", 'smoothing_sigma', min_value=0.0)
+            if engine == 'beam_propagation':
+                params['momentum'] = number(
+                    "Momentum", 'momentum', min_value=0.0, max_value=0.99)
             st.subheader("Imaging target")
             params['radius'] = number("Input radius", 'radius', min_value=0.01)
             if engine == 'ray_propagation':
