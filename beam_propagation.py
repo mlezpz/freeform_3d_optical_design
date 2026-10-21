@@ -231,7 +231,8 @@ class Refractive3dOptic:
         self.concentration = concentration.astype('float64', copy=True)
         self._invalidate(( # Remove these attributes, if they exist:
             'composition', 'calculated_field', 'calculated_output_field_3d',
-            'desired_output_field_3d', 'error_3d', 'loss', 'gradient'))
+            'desired_output_field_3d', 'error_3d', 'loss', 'gradient',
+            'velocity'))
         return None
 
     def _set_3d_composition(self, composition):
@@ -316,7 +317,8 @@ class Refractive3dOptic:
             'desired_output_field_3d', 'error_3d', 'loss', 'gradient'))
         return None
 
-    def gradient_update(self, step_size, z_planes=(1, 2, 3), smoothing_sigma=5):
+    def gradient_update(self, step_size, z_planes=(1, 2, 3), smoothing_sigma=5,
+                        momentum=0):
         """Update our optic to get closer to our desired behavior.
 
         This is multiple steps rolled into one:
@@ -329,6 +331,11 @@ class Refractive3dOptic:
            kernel size = `smoothing_sigma`), scaled (multiplied
            by `step_size`) version of this gradient.
 
+        With `momentum` > 0, the update uses Nesterov momentum, which
+        averages gradients over recent iterations. This smooths out the
+        noise of training on a different input at each iteration. The
+        effective step size grows to roughly `step_size/(1 - momentum)`.
+
         If you know what you're doing, you can do these steps
         individually, but I often prefer having them rolled into one.
 
@@ -336,8 +343,10 @@ class Refractive3dOptic:
         """
         assert step_size > 0
         assert smoothing_sigma >= 0
+        assert 0 <= momentum < 1
         step_size = float(step_size)
         smoothing_sigma = float(smoothing_sigma)
+        momentum = float(momentum)
         z_planes = [float(z) for z in z_planes]
         # These steps involve pytorch tensors, possibly on the GPU. I
         # find these more annoying to interact with than numpy arrays,
@@ -349,10 +358,16 @@ class Refractive3dOptic:
         # The gradient usually has high-spatial-frequency content that
         # isn't desirable or manufacturable, so we update our refractive
         # optic with a scaled, smoothed version of the gradient:
-        for g, c in zip(self._gradient_tensor, self._composition_tensor):
-            update = step_size * smooth_2d(g, sigma=smoothing_sigma)
+        if not hasattr(self, '_velocity_tensor'):
+            self._velocity_tensor = [torch.zeros_like(c)
+                                     for c in self._composition_tensor]
+        for g, c, v in zip(self._gradient_tensor,
+                           self._composition_tensor,
+                           self._velocity_tensor):
+            g = smooth_2d(g, sigma=smoothing_sigma)
+            v.mul_(momentum).add_(g)
             c.requires_grad_(False)
-            c.subtract_(update)
+            c.subtract_(step_size * (g + momentum*v)) # Nesterov momentum
 
         self._invalidate( # Most of our numpy attributes become invalid.
             ('composition', 'concentration', 'calculated_field',
@@ -470,7 +485,7 @@ class Refractive3dOptic:
             # a limited number of homogenous 'reference' materials:
             n_min, n_max = n.min(), n.max() + 1e-6
             if not hasattr(self, '_refractive_index_bin_size'):
-                self._refractive_index_bin_size = 0.02
+                self._refractive_index_bin_size = 0.05
             n_bins = max(2, int((n_max-n_min)/self._refractive_index_bin_size))
             reference_indices = linspace(n_min, n_max, n_bins,
                                          device=d, dtype=f64,
@@ -483,6 +498,12 @@ class Refractive3dOptic:
             last_field_ft = fft(calculated_field[-1])
             reference_fields = ifft(exp(1j*kz*dz) * last_field_ft,
                                     dim=(1, 2))
+            # Like the WPM, correct each reference for the mismatch
+            # between its index and the local index (Eq. 7 of
+            # doi.org/10.1364/OL.559067). This makes interpolation exact
+            # for on-axis light, and much more accurate off-axis:
+            reference_fields = reference_fields * exp(
+                1j*k*(n - reference_indices)*dz)
             # ...which we can use as a lookup table, to interpolate
             # values for the (inhomogenous) refractive object we
             # ACTUALLY have:

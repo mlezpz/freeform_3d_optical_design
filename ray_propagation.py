@@ -184,7 +184,7 @@ class RayBundle:
 
     def get_speed(self):
         sqrt = np.sqrt if isinstance(self.v_xyz, np.ndarray) else torch.sqrt
-        return sqrt(self.v_xyz**2).sum(axis=0)
+        return sqrt((self.v_xyz**2).sum(axis=0))
 
     def to(self, array_type, device='cpu'):
         """Return a copy of this RayBundle, as either torch or numpy."""

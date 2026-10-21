@@ -65,4 +65,4 @@ timestamped folder. Then view it, or any earlier export under `output/`:
 XY slices and an XZ cross-section of the index volume (in physical units),
 the loss history, the metadata, and downloads of all three files.
 
-Tests: `pytest test_end_to_end.py test_app.py`.
+Tests: `pytest`.
