@@ -51,4 +51,18 @@ The output directory gets three files:
 To export an optic you've already designed, without optimizing it again, call
 `export_index_volume(optic, wavelength_um, output_dir)`.
 
-Tests: `pytest test_end_to_end.py`.
+## UI
+
+```
+pip install streamlit
+streamlit run app.py
+```
+
+Set up a design for the built-in 2D imaging target in the sidebar: engine,
+grid, materials, optimization settings and target settings. Press "Run
+design" to watch the loss as it trains. Each run is exported to its own
+timestamped folder. Then view it, or any earlier export under `output/`:
+XY slices and an XZ cross-section of the index volume (in physical units),
+the loss history, the metadata, and downloads of all three files.
+
+Tests: `pytest test_end_to_end.py test_app.py`.
