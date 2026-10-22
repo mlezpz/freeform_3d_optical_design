@@ -619,8 +619,11 @@ class Refractive3dOptic:
         for z_offset in z_planes:
             xf_d, yf_d = z_propagate(   desired_rb, z_offset)
             xf_c, yf_c = z_propagate(calculated_rb, z_offset)
-            distance_sq = (xf_d - xf_c)**2 + (yf_d - yf_c)**2
-            loss += torch.mean(torch.sqrt(distance_sq))
+            # Unlike sqrt(), vector_norm() has a finite gradient (0)
+            # when a ray hits its target exactly:
+            distance = torch.linalg.vector_norm(
+                torch.stack((xf_d - xf_c, yf_d - yf_c)), dim=0)
+            loss += torch.mean(distance)
         loss = loss / len(z_planes)
         # Save our results as attributes, not return values:
         self._loss_tensor = loss
@@ -1319,6 +1322,55 @@ class TrainingData_for_2dImaging:
         v_xyz = input_raybundle.v_xyz.copy()
         v_xyz[0, :] = -1*v_xyz[0, :]
         v_xyz[1, :] = -1*v_xyz[1, :]
+        desired_output_raybundle = RayBundle(xyz, v_xyz, wavelength_um)
+        return input_raybundle, desired_output_raybundle
+
+class TrainingData_for_beam_steering(TrainingData_for_2dImaging):
+    """Training data for a beam steerer, which tilts every ray by the
+    same angle, like a prism.
+
+    Rays enter the same way as for `TrainingData_for_2dImaging`. Each
+    desired output ray is where the input ray would exit if the optic
+    were made of the input material, but tilted by `steering_angle_deg`
+    toward the direction `azimuth_deg` (0 is +x, 90 is +y).
+    """
+    def __init__(
+        self,
+        coordinates,
+        radius,
+        max_z_angle_deg,
+        x0, y0,
+        num_rays,
+        steering_angle_deg,
+        azimuth_deg=0,
+        ):
+        super().__init__(
+            coordinates, radius, max_z_angle_deg, x0, y0, num_rays)
+        assert 0 <= steering_angle_deg < 90
+        self.steering_angle = np.deg2rad(float(steering_angle_deg))
+        self.azimuth = np.deg2rad(float(azimuth_deg))
+        return None
+
+    def input_output_pair(self, wavelength_um):
+        c = self.coordinates
+        assert wavelength_um > 0
+        wavelength_um = float(wavelength_um)
+        input_raybundle = RayBundle(
+            self.random_points_in_a_circle(),
+            self.random_directions_in_a_cone(),
+            wavelength_um)
+        # Travel in a straight line to the output plane:
+        xyz, v_xyz = input_raybundle.xyz.copy(), input_raybundle.v_xyz.copy()
+        travel_time = (c.z_f - xyz[2, :]) / v_xyz[2, :]
+        xyz += travel_time * v_xyz
+        # Then tilt, by rotating about the axis perpendicular to both z
+        # and the steering direction (Rodrigues' rotation formula):
+        axis = np.array([-np.sin(self.azimuth), np.cos(self.azimuth), 0])
+        axis = axis.reshape(3, 1)
+        cos, sin = np.cos(self.steering_angle), np.sin(self.steering_angle)
+        v_xyz = (v_xyz*cos
+                 + np.cross(axis, v_xyz, axis=0)*sin
+                 + axis*(axis*v_xyz).sum(axis=0)*(1 - cos))
         desired_output_raybundle = RayBundle(xyz, v_xyz, wavelength_um)
         return input_raybundle, desired_output_raybundle
 
