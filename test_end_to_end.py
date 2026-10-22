@@ -6,7 +6,8 @@ import tifffile as tf
 
 import beam_propagation as bp
 import ray_propagation as rp
-from end_to_end import design_and_export, export_index_volume
+from end_to_end import (design_and_export, export_index_volume,
+                        half_pitch_grin_concentration, held_out_loss)
 
 def make_ray_optic(n=21):
     coords = rp.Coordinates(xyz_i=(-10.0, -10.0, 0.0),
@@ -65,21 +66,28 @@ def test_export_records_ray_engine_input_output_materials(tmp_path):
     assert metadata['output_material'] == {
         'type': 'FixedIndexMaterial', 'index': 1.0}
 
-def test_design_and_export_with_ray_engine(tmp_path):
-    ro = make_ray_optic()
+def ray_training_pairs(ro, num_rays=100):
     data_source = rp.TrainingData_for_2dImaging(
-        ro.coordinates, radius=3, max_z_angle_deg=15, x0=0, y0=0, num_rays=100)
+        ro.coordinates, radius=3, max_z_angle_deg=15, x0=0, y0=0,
+        num_rays=num_rays)
 
     def set_training_pair(optic):
         input_rays, desired_output_rays = data_source.input_output_pair(0.5)
         optic.set_input_raybundle(input_rays)
         optic.set_desired_output_raybundle(desired_output_rays)
+    return set_training_pair
+
+def test_design_and_export_with_ray_engine(tmp_path):
+    ro = make_ray_optic()
+    lengths = []
 
     loss_history = design_and_export(
-        ro, set_training_pair, 0.5, iterations=3, output_dir=tmp_path,
+        ro, ray_training_pairs(ro), 0.5, iterations=3, output_dir=tmp_path,
+        progress=lambda history: lengths.append(len(history)),
         dt=0.2, step_size=10, z_planes=(0, 1), smoothing_sigma=1)
 
     check_design_outputs(loss_history, tmp_path)
+    assert lengths == [1, 2, 3]
 
 def test_design_and_export_with_beam_engine(tmp_path):
     ro = make_beam_optic()
@@ -105,3 +113,42 @@ def check_design_outputs(loss_history, output_dir):
     metadata = json.loads((output_dir / 'metadata.json').read_text())
     assert metadata['iterations'] == 3
     assert metadata['loss_history'] == loss_history
+    assert np.isfinite(metadata['held_out_loss'])
+
+def test_held_out_loss_is_repeatable_and_leaves_training_randomness_alone():
+    ro = make_ray_optic()
+    set_training_pair = ray_training_pairs(ro)
+    np.random.seed(1)
+    expected_next_draw = np.random.random()
+    np.random.seed(1)
+
+    first = held_out_loss(ro, set_training_pair, num_pairs=3, dt=0.2)
+    second = held_out_loss(ro, set_training_pair, num_pairs=3, dt=0.2)
+
+    assert first == second
+    assert np.random.random() == expected_next_draw
+
+@pytest.mark.parametrize('make_optic', [make_ray_optic, make_beam_optic])
+def test_half_pitch_grin_concentration_is_a_radial_lens(make_optic):
+    ro = make_optic()
+
+    concentration = half_pitch_grin_concentration(ro, 0.5)
+
+    nx, ny, nz = map(int, ro.coordinates.n_xyz)
+    assert concentration.shape == (nz, ny, nx)
+    assert 0 <= concentration.min() and concentration.max() <= 1
+    assert np.allclose(concentration, concentration[:1])        # Uniform in z
+    assert np.allclose(concentration, concentration[:, ::-1, :]) # Symmetric
+    assert np.allclose(concentration, concentration[:, :, ::-1])
+    center = concentration[0, ny//2, nx//2]
+    assert center == concentration.max() and center > concentration[0, 0, 0]
+
+def test_grin_start_scores_far_better_than_uniform_for_the_imaging_target():
+    ro = make_ray_optic()
+    set_training_pair = ray_training_pairs(ro, num_rays=300)
+    uniform = held_out_loss(ro, set_training_pair, num_pairs=3, dt=0.2)
+
+    ro.set_3d_concentration(half_pitch_grin_concentration(ro, 0.5))
+    grin = held_out_loss(ro, set_training_pair, num_pairs=3, dt=0.2)
+
+    assert grin < 0.1*uniform

@@ -7,7 +7,8 @@ from end_to_end import export_index_volume
 
 def tiny_params(engine):
     params = dict(DEFAULTS[engine], engine=engine, base_index=1.0,
-                  mixer_index=1.5, iterations=2)
+                  mixer_index=1.5, iterations=2, start='GRIN lens',
+                  start_from='')
     params.update(n_xy=21, n_z=11, num_rays=50)
     return params
 
@@ -51,3 +52,17 @@ def test_app_runs_a_design_and_shows_it(engine, tmp_path):
     shown_metadata = at.json[0].value
     assert '"engine": "%s"'%engine in shown_metadata
     assert '"iterations": 2' in shown_metadata
+    assert at.metric[0].label == "Held-out loss"
+
+def test_build_run_can_start_from_a_previous_export(tmp_path):
+    optic, _, _ = build_run(tiny_params('ray_propagation'))
+    export_index_volume(optic, 0.5, tmp_path)
+    exported = optic.concentration
+
+    params = dict(tiny_params('ray_propagation'), start='Previous export',
+                  start_from=str(tmp_path))
+    restarted, _, _ = build_run(params)
+
+    np.testing.assert_allclose(restarted.concentration, exported, rtol=1e-6)
+    with pytest.raises(ValueError, match="grid"):
+        build_run(dict(params, n_z=12))

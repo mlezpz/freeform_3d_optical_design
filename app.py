@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from end_to_end import design_and_export
+from end_to_end import design_and_export, half_pitch_grin_concentration
 
 """
 A Streamlit UI for designing a 3D refractive optic for the built-in 2D
@@ -72,6 +72,19 @@ def build_run(params):
             optic.set_2d_input_field(input_field, wavelength)
             optic.set_2d_desired_output_field(desired_output_field)
         gradient_update_kwargs['momentum'] = params['momentum']
+
+    if params['start'] == 'GRIN lens':
+        optic.set_3d_concentration(
+            half_pitch_grin_concentration(optic, wavelength))
+    elif params['start'] == 'Previous export':
+        import tifffile as tf
+        concentration = tf.imread(
+            Path(params['start_from']) / 'concentration.tif')
+        if concentration.shape != (params['n_z'], n_xy, n_xy):
+            raise ValueError(
+                "That export's grid is %s (z, y, x), but this design's is %s."%(
+                    concentration.shape, (params['n_z'], n_xy, n_xy)))
+        optic.set_3d_concentration(concentration.astype('float64'))
     return optic, set_training_pair, gradient_update_kwargs
 
 def load_output(output_dir):
@@ -129,6 +142,15 @@ def main():
             if engine == 'beam_propagation':
                 params['momentum'] = number(
                     "Momentum", 'momentum', min_value=0.0, max_value=0.99)
+            st.subheader("Starting design")
+            params['start'] = st.radio(
+                "Start from", ('GRIN lens', 'Uniform', 'Previous export'),
+                key='start', help="A GRIN lens already images the input "
+                "face onto the output face, inverted, so it starts much "
+                "closer to the best design.")
+            params['start_from'] = st.text_input(
+                "Previous export folder (for 'Previous export')",
+                key='start_from')
             st.subheader("Imaging target")
             params['radius'] = number("Input radius", 'radius', min_value=0.01)
             if engine == 'ray_propagation':
@@ -148,22 +170,23 @@ def main():
 
     if submitted:
         output_dir = str(Path(runs_dir) / time.strftime('%Y%m%d_%H%M%S'))
-        optic, set_training_pair, gradient_update_kwargs = build_run(params)
+        try:
+            optic, set_training_pair, gradient_update_kwargs = build_run(
+                params)
+        except (OSError, ValueError) as e:
+            st.error("Can't start from that export: %s"%(e))
+            st.stop()
         progress = st.progress(0.0, text="Designing...")
         loss_chart = st.empty()
         iterations = params['iterations']
-        losses = []
-        def set_training_pair_with_progress(optic):
-            if hasattr(optic, 'loss'): # The loss from the previous iteration
-                losses.append(float(optic.loss))
-                loss_chart.line_chart({'loss': losses})
-            progress.progress((len(losses) + 1) / iterations,
+        def show_progress(losses):
+            loss_chart.line_chart({'loss': losses})
+            progress.progress(len(losses) / iterations,
                               text="Iteration %i of %i"%(
-                                  len(losses) + 1, iterations))
-            set_training_pair(optic)
-        design_and_export(optic, set_training_pair_with_progress,
+                                  len(losses), iterations))
+        design_and_export(optic, set_training_pair,
                           params['wavelength_um'], iterations, output_dir,
-                          **gradient_update_kwargs)
+                          progress=show_progress, **gradient_update_kwargs)
         progress.empty()
         loss_chart.empty()
         st.session_state['last_run'] = output_dir
@@ -197,6 +220,10 @@ def main():
         st.caption("XZ cross-section at the middle of y")
         st.pyplot(plot_slice(index[:, ny//2, :].T, z_extent + x_extent,
                              'z', 'x', vmin, vmax))
+    if 'held_out_loss' in metadata:
+        st.metric("Held-out loss", "%.4g"%(metadata['held_out_loss']),
+                  help="Mean loss over a fixed set of training pairs, so "
+                  "it's comparable between designs.")
     st.subheader("Loss history")
     st.line_chart({'loss': metadata.get('loss_history', [])})
     st.subheader("Metadata")
