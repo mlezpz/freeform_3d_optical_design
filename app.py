@@ -7,8 +7,9 @@ import numpy as np
 from end_to_end import design_and_export, half_pitch_grin_concentration
 
 """
-A Streamlit UI for designing a 3D refractive optic for the built-in 2D
-imaging target, and for viewing the exported results.
+A Streamlit UI for designing a 3D refractive optic for one of the built-in
+targets (an inverted image, or beam steering for the ray engine), and for
+viewing the exported results.
 
     streamlit run app.py
 """
@@ -25,6 +26,15 @@ DEFAULTS = {
         half_width=12.7, z_length=25.4, n_xy=64, n_z=32, wavelength_um=1.0,
         step_size=10.0, momentum=0.9, z_planes=(1, 2, 3), smoothing_sigma=5.0,
         radius=3.0, divergence_angle_degrees=15.0),
+    }
+
+# What each target changes from its engine's defaults. Steering is judged
+# in the far field, needs a smaller step, and has no GRIN shortcut:
+TARGETS = {
+    'Inverted image': {},
+    'Beam steering': dict(
+        z_planes=(20, 40), step_size=0.1, max_z_angle_deg=0.0, start='Uniform',
+        steering_angle_deg=10.0, azimuth_deg=0.0),
     }
 
 def build_run(params):
@@ -44,17 +54,22 @@ def build_run(params):
     wavelength = params['wavelength_um']
     gradient_update_kwargs = dict(
         step_size=params['step_size'],
-        z_planes=DEFAULTS[params['engine']]['z_planes'],
+        z_planes=params['z_planes'],
         smoothing_sigma=params['smoothing_sigma'])
 
     if params['engine'] == 'ray_propagation':
         optic.set_materials(input_material=base,
                             mixture_materials_list=(base, mixer),
                             output_material=base)
-        data_source = engine.TrainingData_for_2dImaging(
-            coords, radius=params['radius'],
-            max_z_angle_deg=params['max_z_angle_deg'],
-            x0=0, y0=0, num_rays=params['num_rays'])
+        rays = dict(radius=params['radius'],
+                    max_z_angle_deg=params['max_z_angle_deg'],
+                    x0=0, y0=0, num_rays=params['num_rays'])
+        if params['target'] == 'Beam steering':
+            data_source = engine.TrainingData_for_beam_steering(
+                coords, steering_angle_deg=params['steering_angle_deg'],
+                azimuth_deg=params['azimuth_deg'], **rays)
+        else:
+            data_source = engine.TrainingData_for_2dImaging(coords, **rays)
         def set_training_pair(optic):
             input_rays, desired_output_rays = (
                 data_source.input_output_pair(wavelength))
@@ -112,14 +127,21 @@ def main():
 
     with st.sidebar:
         engine = st.radio("Engine", list(DEFAULTS), key='engine')
-        d = DEFAULTS[engine]
-        def number(label, name, **kwargs): # Separate widget state per engine
-            return st.number_input(
-                label, value=d[name], key=engine + '_' + name, **kwargs)
+        target = 'Inverted image'
+        if engine == 'ray_propagation': # The beam engine only images
+            target = st.radio("Target", list(TARGETS), key='target')
+        d = dict(DEFAULTS[engine], **TARGETS[target])
+        def key(name): # Separate widget state per engine, and per target
+            # wherever the target changes the default:
+            return '_'.join([engine] + [target]*(name in TARGETS[target])
+                            + [name])
+        def number(label, name, **kwargs):
+            return st.number_input(label, value=d[name], key=key(name),
+                                   **kwargs)
         with st.form('design'):
             st.subheader("Grid")
             params = dict(
-                engine=engine,
+                engine=engine, target=target, z_planes=d['z_planes'],
                 half_width=number("XY half-width", 'half_width', min_value=0.1),
                 z_length=number("Z length", 'z_length', min_value=0.1),
                 n_xy=number("Voxels in x and y", 'n_xy',
@@ -143,15 +165,23 @@ def main():
                 params['momentum'] = number(
                     "Momentum", 'momentum', min_value=0.0, max_value=0.99)
             st.subheader("Starting design")
+            starts = ('GRIN lens', 'Uniform', 'Previous export')
             params['start'] = st.radio(
-                "Start from", ('GRIN lens', 'Uniform', 'Previous export'),
-                key='start', help="A GRIN lens already images the input "
-                "face onto the output face, inverted, so it starts much "
-                "closer to the best design.")
+                "Start from", starts, key=key('start'),
+                index=starts.index(d.get('start', 'GRIN lens')),
+                help="A GRIN lens already images the input face onto the "
+                "output face, inverted, so it starts much closer to the "
+                "best design for the 'Inverted image' target.")
             params['start_from'] = st.text_input(
                 "Previous export folder (for 'Previous export')",
                 key='start_from')
-            st.subheader("Imaging target")
+            st.subheader(target)
+            if target == 'Beam steering':
+                params['steering_angle_deg'] = number(
+                    "Steering angle (deg)", 'steering_angle_deg',
+                    min_value=0.0, max_value=89.0)
+                params['azimuth_deg'] = number(
+                    "Toward azimuth (deg, 0 is +x)", 'azimuth_deg')
             params['radius'] = number("Input radius", 'radius', min_value=0.01)
             if engine == 'ray_propagation':
                 params['max_z_angle_deg'] = number(

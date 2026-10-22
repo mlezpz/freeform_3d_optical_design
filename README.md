@@ -104,10 +104,11 @@ pip install streamlit
 streamlit run app.py
 ```
 
-Set up a design for the built-in 2D imaging target in the sidebar: engine,
-grid, materials, optimization settings, starting design (a GRIN lens by
-default, a uniform mixture, or a previous export) and target settings. Press "Run
-design" to watch the loss as it trains. Each run is exported to its own
+Set up a design in the sidebar: engine, target (an inverted image, or for
+the ray engine, beam steering with its own defaults, as described above),
+grid, materials, optimization settings, starting design (a GRIN lens, a
+uniform mixture, or a previous export; the default depends on the target)
+and target settings. Press "Run design" to watch the loss as it trains. Each run is exported to its own
 timestamped folder. Then view it, or any earlier export under `output/`:
 XY slices and an XZ cross-section of the index volume (in physical units),
 the held-out loss, the loss history, the metadata, and downloads of all
