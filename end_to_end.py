@@ -16,24 +16,85 @@ def design_and_export(optic,
                       wavelength_um,
                       iterations,
                       output_dir,
+                      progress=None,
                       **gradient_update_kwargs):
     """Optimize `optic`, then export it via `export_index_volume()`.
 
     `set_training_pair(optic)` is called once per iteration, and should
     set the optic's input and desired output (rays or fields, depending
     on the engine). `gradient_update_kwargs` are passed straight to
-    `optic.gradient_update()`.
+    `optic.gradient_update()`. If given, `progress(loss_history)` is
+    called after each iteration.
+
+    The exported metadata includes the design's `held_out_loss()`.
     """
     loss_history = []
     for _ in range(iterations):
         set_training_pair(optic)
         optic.gradient_update(**gradient_update_kwargs)
         loss_history.append(float(optic.loss))
+        if progress is not None:
+            progress(loss_history)
     export_index_volume(optic, wavelength_um, output_dir, extra_metadata={
         'iterations': iterations,
         'gradient_update_kwargs': gradient_update_kwargs,
-        'loss_history': loss_history})
+        'loss_history': loss_history,
+        'held_out_loss': held_out_loss(
+            optic, set_training_pair, **gradient_update_kwargs)})
     return loss_history
+
+def held_out_loss(optic, set_training_pair, num_pairs=25, seed=0,
+                  **gradient_update_kwargs):
+    """Mean loss over a fixed, seeded set of training pairs.
+
+    Training loss uses a different random pair every iteration, so it's
+    noisy. This is a repeatable score for comparing designs. It doesn't
+    change `optic`'s design, or the random sequence used for training.
+    """
+    z_planes = gradient_update_kwargs.get('z_planes')
+    loss_kwargs = {} if z_planes is None else {'z_planes': z_planes}
+    random_state = np.random.get_state() # The training data uses np.random
+    np.random.seed(seed)
+    losses = []
+    try:
+        for _ in range(num_pairs):
+            set_training_pair(optic)
+            if _is_beam_optic(optic):
+                optic._calculate_3d_field()
+            else:
+                optic._calculate_3d_propagation(
+                    dt=gradient_update_kwargs.get('dt'))
+            optic._calculate_loss(**loss_kwargs)
+            losses.append(float(optic.loss))
+    finally:
+        np.random.set_state(random_state)
+    return float(np.mean(losses))
+
+def half_pitch_grin_concentration(optic, wavelength_um):
+    """A graded-index lens that images the input face onto the output
+    face, inverted 1:1, which is what `TrainingData_for_2dImaging` asks
+    for. As a starting design it reaches a much lower loss than a uniform
+    mixture, which gradient search alone doesn't find.
+
+    The index falls off from the axis as n_max*sech(pi*r/L), which turns
+    every ray through the axis into its mirror image after the optic's
+    length L (a 'Mikaelian lens'). Where that would drop below the lower
+    index, the profile is clipped.
+    """
+    c = optic.coordinates
+    n_1, n_2 = [m.get_index(wavelength_um) for m in optic.material_list]
+    if _is_beam_optic(optic): # One dz step per z-slice
+        length = c.nz * c.dz
+    else:                     # Rays travel from z_i to z_f
+        length = c.z_f - c.z_i
+    x, y, _ = c.xyz
+    n = max(n_1, n_2) / np.cosh(np.pi * np.sqrt(x**2 + y**2) / length)
+    concentration = np.clip((n - n_1) / (n_2 - n_1), 0, 1)
+    nx, ny, nz = map(int, c.n_xyz)
+    return np.broadcast_to(concentration, (nz, ny, nx))
+
+def _is_beam_optic(optic):
+    return hasattr(optic, '_calculate_3d_field')
 
 def export_index_volume(optic, wavelength_um, output_dir, extra_metadata=None):
     """Write `index.tif`, `concentration.tif` and `metadata.json`.

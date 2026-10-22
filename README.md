@@ -46,7 +46,30 @@ The output directory gets three files:
 - `metadata.json`: the engine, axis order, shape, first voxel center, voxel
   size (in the units of your `Coordinates`; microns if you use
   `SellmeierMaterial`), wavelength, index range, materials, and the run
-  record (iterations, `gradient_update` arguments, loss history).
+  record (iterations, `gradient_update` arguments, loss history, and the
+  held-out loss).
+
+Training loss is noisy, because each iteration uses a different random
+training pair. `held_out_loss(optic, set_training_pair, **gradient_update_kwargs)`
+scores a design on a fixed, seeded set of pairs instead, so you can compare
+designs. That's the `held_out_loss` recorded in the metadata.
+
+## Starting design
+
+Where the optimization starts matters more than how long it runs. For the
+built-in imaging target, start from a graded-index lens that already images
+the input face onto the output face:
+
+```python
+from end_to_end import half_pitch_grin_concentration
+optic.set_3d_concentration(half_pitch_grin_concentration(optic, wavelength_um))
+```
+
+On the UI's default grids, this lens scores better before any training than
+2000 iterations from a uniform start do (held-out loss 0.052 vs 0.067 for
+the ray engine, 0.012 vs about 0.023 for the beam engine). 500 iterations
+from it reach 0.049 and 0.011. To continue an earlier
+design instead, load its `concentration.tif` with `set_3d_concentration`.
 
 To export an optic you've already designed, without optimizing it again, call
 `export_index_volume(optic, wavelength_um, output_dir)`.
@@ -59,10 +82,12 @@ streamlit run app.py
 ```
 
 Set up a design for the built-in 2D imaging target in the sidebar: engine,
-grid, materials, optimization settings and target settings. Press "Run
+grid, materials, optimization settings, starting design (a GRIN lens by
+default, a uniform mixture, or a previous export) and target settings. Press "Run
 design" to watch the loss as it trains. Each run is exported to its own
 timestamped folder. Then view it, or any earlier export under `output/`:
 XY slices and an XZ cross-section of the index volume (in physical units),
-the loss history, the metadata, and downloads of all three files.
+the held-out loss, the loss history, the metadata, and downloads of all
+three files.
 
 Tests: `pytest`.
