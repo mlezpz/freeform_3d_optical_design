@@ -74,6 +74,29 @@ design instead, load its `concentration.tif` with `set_3d_concentration`.
 To export an optic you've already designed, without optimizing it again, call
 `export_index_volume(optic, wavelength_um, output_dir)`.
 
+## Beam-steering target
+
+`ray_propagation.TrainingData_for_beam_steering` asks the optic to tilt
+every ray by `steering_angle_deg` toward `azimuth_deg`, like a prism. Each
+target ray leaves the output face where the input ray would exit if the
+optic were made of the input material, then tilted:
+
+```python
+data_source = TrainingData_for_beam_steering(
+    coords, radius=3, max_z_angle_deg=0, x0=0, y0=0, num_rays=1000,
+    steering_angle_deg=10)
+```
+
+Steering light sideways within the optic shifts it sideways too, so
+measure the loss in the far field, where the angle dominates:
+`z_planes=(20, 40)` rather than the imaging default `(0, 1)`. With the
+exit-plane default, the best score comes from not steering at all. Use a
+smaller step than for imaging (`step_size=0.1` on the default grid), and
+start from a uniform mixture: the GRIN start is only for the imaging
+target. On the default grid, 3000 iterations steer collimated light by
+8.4° ± 0.5° toward a 10° target, and the steering angle is still slowly
+increasing at that point.
+
 ## UI
 
 ```
